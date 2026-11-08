@@ -1,0 +1,57 @@
+server:
+  port: ${SERVER_PORT:8080}
+spring:
+  application:
+    name: api-gateway
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+  cloud:
+    gateway:
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 20
+            redis-rate-limiter.burstCapacity: 40
+            key-resolver: "#{@principalKeyResolver}"
+      discovery:
+        locator:
+          enabled: false
+      routes:
+        - id: products
+          uri: lb://product-service
+          predicates:
+            - Path=/api/products/**, /api/v1/products/**
+        - id: orders
+          uri: lb://order-service
+          predicates:
+            - Path=/api/orders/**, /api/v1/orders/**
+        - id: users
+          uri: lb://user-service
+          predicates:
+            - Path=/api/users/**, /api/v1/users/**
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,gateway
+  endpoint:
+    health:
+      probes:
+        enabled: true
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka/}
+security:
+  jwt:
+    secret: ${JWT_SECRET:ecommerce-local-dev-secret-key-change-this-32bytes!}
+resilience4j:
+  circuitbreaker:
+    instances:
+      backend:
+        sliding-window-size: 10
+        failure-rate-threshold: 50

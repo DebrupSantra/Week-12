@@ -1,0 +1,68 @@
+nameOverride: ""
+fullnameOverride: ""
+imagePullPolicy: IfNotPresent
+imageTag: "1.0.0"
+imagePrefix: local/ecommerce
+replicaCount: 1
+secrets:
+  name: ecommerce-secrets
+  jwtSecretKey: jwt-secret
+  postgresPasswordKey: postgres-password
+external:
+  eurekaUrl: ""
+  configUrl: ""
+  kafkaBootstrapServers: kafka:9092
+  zipkinEndpoint: http://zipkin:9411/api/v2/spans
+  postgresHost: postgres
+  redisHost: redis
+ingress:
+  enabled: true
+  className: nginx
+  host: ecommerce.local
+  tls: []
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+  cpuUtilization: 70
+services:
+  config-server:
+    port: 8888
+    database: ""
+    replicas: 1
+  discovery-server:
+    port: 8761
+    database: ""
+    replicas: 1
+  api-gateway:
+    port: 8080
+    database: ""
+    jwt: true
+    redis: true
+    replicas: 2
+  product-service:
+    port: 8081
+    database: product_db
+    redis: true
+    replicas: 1
+  order-service:
+    port: 8082
+    database: order_db
+    replicas: 1
+  payment-service:
+    port: 8083
+    database: payment_db
+    replicas: 1
+  user-service:
+    port: 8084
+    database: user_db
+    jwt: true
+    replicas: 1
+  inventory-service:
+    port: 8085
+    database: inventory_db
+    replicas: 1
+  notification-service:
+    port: 8086
+    database: notification_db
+    replicas: 1

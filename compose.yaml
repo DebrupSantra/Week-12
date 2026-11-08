@@ -1,0 +1,366 @@
+name: ecommerce-platform
+
+x-service-defaults: &service-defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: local/ecommerce-${SERVICE:-service}:1.0.0
+  restart: unless-stopped
+  networks: [ecommerce]
+  environment: &service-environment
+    CONFIG_SERVER_URL: http://config-server:8888
+    EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
+    SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    TRACING_SAMPLING_PROBABILITY: "1.0"
+    ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+    LOGSTASH_DESTINATION: logstash:5000
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ecommerce
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce}
+      POSTGRES_DB: ecommerce
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce -d ecommerce"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [ecommerce]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [ecommerce]
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.0
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [ecommerce]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports: ["29092:29092"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+    networks: [ecommerce]
+
+  config-server:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: config-server }
+    image: local/ecommerce-config-server:1.0.0
+    ports: ["8888:8888"]
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8888/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  discovery-server:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: discovery-server }
+    image: local/ecommerce-discovery-server:1.0.0
+    ports: ["8761:8761"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8761/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  api-gateway:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: api-gateway }
+    image: local/ecommerce-api-gateway:1.0.0
+    ports: ["8080:8080"]
+    environment:
+      <<: *service-environment
+      JWT_SECRET: ${JWT_SECRET:-ecommerce-local-dev-secret-key-change-this-32bytes!}
+    depends_on:
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+
+  product-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: product-service }
+    image: local/ecommerce-product-service:1.0.0
+    ports: ["127.0.0.1:8081:8081"]
+    environment:
+      <<: *service-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/product_db
+      SPRING_DATA_REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  order-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: order-service }
+    image: local/ecommerce-order-service:1.0.0
+    ports: ["127.0.0.1:8082:8082"]
+    environment:
+      <<: *service-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/order_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  payment-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: payment-service }
+    image: local/ecommerce-payment-service:1.0.0
+    ports: ["127.0.0.1:8083:8083"]
+    environment:
+      <<: *service-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payment_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  user-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: user-service }
+    image: local/ecommerce-user-service:1.0.0
+    ports: ["127.0.0.1:8084:8084"]
+    environment:
+      <<: *service-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/user_db
+      JWT_SECRET: ${JWT_SECRET:-ecommerce-local-dev-secret-key-change-this-32bytes!}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8084/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  inventory-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: inventory-service }
+    image: local/ecommerce-inventory-service:1.0.0
+    ports: ["127.0.0.1:8085:8085"]
+    environment:
+      <<: *service-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/inventory_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8085/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  notification-service:
+    <<: *service-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { SERVICE: notification-service }
+    image: local/ecommerce-notification-service:1.0.0
+    ports: ["127.0.0.1:8086:8086"]
+    environment:
+      <<: *service-environment
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/notification_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      config-server:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8086/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  zipkin:
+    image: openzipkin/zipkin:3.4
+    restart: unless-stopped
+    ports: ["9411:9411"]
+    networks: [ecommerce]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    volumes: [elasticsearch-data:/usr/share/elasticsearch/data]
+    networks: [ecommerce]
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.15.3
+    restart: unless-stopped
+    depends_on: [elasticsearch]
+    ports: ["5000:5000"]
+    volumes:
+      - ./observability/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+    networks: [ecommerce]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.3
+    restart: unless-stopped
+    depends_on: [elasticsearch]
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports: ["5601:5601"]
+    networks: [ecommerce]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    ports: ["9090:9090"]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks: [ecommerce]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports: ["3000:3000"]
+    volumes:
+      - ./observability/grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./observability/grafana-dashboard-provider.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
+      - ./observability/ecommerce-dashboard.json:/var/lib/grafana/dashboards/ecommerce-dashboard.json:ro
+    networks: [ecommerce]
+
+volumes:
+  postgres-data:
+  elasticsearch-data:
+networks:
+  ecommerce:
+    driver: bridge
