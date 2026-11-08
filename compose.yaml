@@ -11,6 +11,7 @@ x-service-defaults: &service-defaults
     CONFIG_SERVER_URL: http://config-server:8888
     EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: http://discovery-server:8761/eureka/
     SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    SPRING_CONFIG_ADDITIONAL_LOCATION: optional:configtree:/run/secrets/
     TRACING_SAMPLING_PROBABILITY: "1.0"
     ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
     LOGSTASH_DESTINATION: logstash:5000
@@ -20,15 +21,17 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ecommerce
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
       POSTGRES_DB: ecommerce
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d:ro
+    secrets:
+      - postgres-password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ecommerce -d ecommerce"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -37,7 +40,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -64,7 +67,7 @@ services:
     depends_on:
       zookeeper:
         condition: service_healthy
-    ports: ["29092:29092"]
+    ports: ["127.0.0.1:29092:29092"]
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -88,14 +91,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: config-server }
+      args: { SERVICE: config-server, SERVICE_PORT: "8888" }
     image: local/ecommerce-config-server:1.0.0
-    ports: ["8888:8888"]
+    ports: ["127.0.0.1:8888:8888"]
     depends_on:
       discovery-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8888/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8888/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -105,11 +108,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: discovery-server }
+      args: { SERVICE: discovery-server, SERVICE_PORT: "8761" }
     image: local/ecommerce-discovery-server:1.0.0
-    ports: ["8761:8761"]
+    ports: ["127.0.0.1:8761:8761"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8761/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8761/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -119,12 +122,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: api-gateway }
+      args: { SERVICE: api-gateway, SERVICE_PORT: "8080" }
     image: local/ecommerce-api-gateway:1.0.0
-    ports: ["8080:8080"]
-    environment:
-      <<: *service-environment
-      JWT_SECRET: ${JWT_SECRET:-ecommerce-local-dev-secret-key-change-this-32bytes!}
+    ports: ["127.0.0.1:8080:8080"]
+    secrets:
+      - source: jwt-secret
+        target: JWT_SECRET
     depends_on:
       config-server:
         condition: service_healthy
@@ -137,7 +140,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 15
@@ -147,13 +150,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: product-service }
+      args: { SERVICE: product-service, SERVICE_PORT: "8081" }
     image: local/ecommerce-product-service:1.0.0
     ports: ["127.0.0.1:8081:8081"]
     environment:
       <<: *service-environment
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/product_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
       SPRING_DATA_REDIS_HOST: redis
+    secrets:
+      - source: postgres-password
+        target: SPRING_DATASOURCE_PASSWORD
     depends_on:
       postgres:
         condition: service_healthy
@@ -166,7 +173,7 @@ services:
       kafka:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8081/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -176,12 +183,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: order-service }
+      args: { SERVICE: order-service, SERVICE_PORT: "8082" }
     image: local/ecommerce-order-service:1.0.0
     ports: ["127.0.0.1:8082:8082"]
     environment:
       <<: *service-environment
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/order_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    secrets:
+      - source: postgres-password
+        target: SPRING_DATASOURCE_PASSWORD
     depends_on:
       postgres:
         condition: service_healthy
@@ -198,7 +209,7 @@ services:
       payment-service:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8082/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8082/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -208,12 +219,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: payment-service }
+      args: { SERVICE: payment-service, SERVICE_PORT: "8083" }
     image: local/ecommerce-payment-service:1.0.0
     ports: ["127.0.0.1:8083:8083"]
     environment:
       <<: *service-environment
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payment_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    secrets:
+      - source: postgres-password
+        target: SPRING_DATASOURCE_PASSWORD
     depends_on:
       postgres:
         condition: service_healthy
@@ -222,7 +237,7 @@ services:
       discovery-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8083/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8083/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -232,13 +247,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: user-service }
+      args: { SERVICE: user-service, SERVICE_PORT: "8084" }
     image: local/ecommerce-user-service:1.0.0
     ports: ["127.0.0.1:8084:8084"]
     environment:
       <<: *service-environment
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/user_db
-      JWT_SECRET: ${JWT_SECRET:-ecommerce-local-dev-secret-key-change-this-32bytes!}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    secrets:
+      - source: postgres-password
+        target: SPRING_DATASOURCE_PASSWORD
+      - source: jwt-secret
+        target: JWT_SECRET
     depends_on:
       postgres:
         condition: service_healthy
@@ -247,7 +267,7 @@ services:
       discovery-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8084/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8084/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -257,12 +277,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: inventory-service }
+      args: { SERVICE: inventory-service, SERVICE_PORT: "8085" }
     image: local/ecommerce-inventory-service:1.0.0
     ports: ["127.0.0.1:8085:8085"]
     environment:
       <<: *service-environment
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/inventory_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    secrets:
+      - source: postgres-password
+        target: SPRING_DATASOURCE_PASSWORD
     depends_on:
       postgres:
         condition: service_healthy
@@ -271,7 +295,7 @@ services:
       discovery-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8085/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8085/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -281,12 +305,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args: { SERVICE: notification-service }
+      args: { SERVICE: notification-service, SERVICE_PORT: "8086" }
     image: local/ecommerce-notification-service:1.0.0
     ports: ["127.0.0.1:8086:8086"]
     environment:
       <<: *service-environment
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/notification_db
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    secrets:
+      - source: postgres-password
+        target: SPRING_DATASOURCE_PASSWORD
     depends_on:
       postgres:
         condition: service_healthy
@@ -297,7 +325,7 @@ services:
       discovery-server:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8086/actuator/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8086/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -305,7 +333,7 @@ services:
   zipkin:
     image: openzipkin/zipkin:3.4
     restart: unless-stopped
-    ports: ["9411:9411"]
+    ports: ["127.0.0.1:9411:9411"]
     networks: [ecommerce]
 
   elasticsearch:
@@ -315,7 +343,7 @@ services:
       discovery.type: single-node
       xpack.security.enabled: "false"
       ES_JAVA_OPTS: -Xms512m -Xmx512m
-    ports: ["9200:9200"]
+    ports: ["127.0.0.1:9200:9200"]
     volumes: [elasticsearch-data:/usr/share/elasticsearch/data]
     networks: [ecommerce]
 
@@ -323,7 +351,7 @@ services:
     image: docker.elastic.co/logstash/logstash:8.15.3
     restart: unless-stopped
     depends_on: [elasticsearch]
-    ports: ["5000:5000"]
+    ports: ["127.0.0.1:5000:5000"]
     volumes:
       - ./observability/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
     networks: [ecommerce]
@@ -334,13 +362,13 @@ services:
     depends_on: [elasticsearch]
     environment:
       ELASTICSEARCH_HOSTS: http://elasticsearch:9200
-    ports: ["5601:5601"]
+    ports: ["127.0.0.1:5601:5601"]
     networks: [ecommerce]
 
   prometheus:
     image: prom/prometheus:v2.55.1
     restart: unless-stopped
-    ports: ["9090:9090"]
+    ports: ["127.0.0.1:9090:9090"]
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     networks: [ecommerce]
@@ -350,8 +378,10 @@ services:
     restart: unless-stopped
     depends_on: [prometheus]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-    ports: ["3000:3000"]
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana-admin-password
+    secrets:
+      - grafana-admin-password
+    ports: ["127.0.0.1:3000:3000"]
     volumes:
       - ./observability/grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
       - ./observability/grafana-dashboard-provider.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
@@ -364,3 +394,11 @@ volumes:
 networks:
   ecommerce:
     driver: bridge
+
+secrets:
+  postgres-password:
+    environment: POSTGRES_PASSWORD
+  jwt-secret:
+    environment: JWT_SECRET
+  grafana-admin-password:
+    environment: GRAFANA_ADMIN_PASSWORD

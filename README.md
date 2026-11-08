@@ -24,14 +24,15 @@ The gateway accepts the stable `/api/v1/...` route prefix and keeps `/api/...` a
 
 ## Run locally
 
-Requirements: Docker Compose v2 and Java/Maven only if building outside containers.
+Requirements: Docker Engine with Docker Compose v2.6.1 or newer. Java/Maven are only needed if building outside containers. This repository contains the Spring Boot backend but no React frontend.
 
 ```powershell
 Copy-Item .env.example .env
+# Edit .env and set POSTGRES_USER, POSTGRES_PASSWORD, JWT_SECRET, and GRAFANA_ADMIN_PASSWORD.
 docker compose up --build
 ```
 
-The first build packages each service image, so allow a few minutes. The service endpoints become available after their health checks pass. To stop the stack, run `docker compose down`; add `-v` only when intentionally deleting local database and Elasticsearch data.
+The first build packages each service image, so allow a few minutes. Compose builds all nine Spring applications from the shared, parameterized multi-stage `Dockerfile`; Maven dependencies are cached separately from application source. PostgreSQL, JWT, and Grafana credentials must be supplied in the untracked `.env` file. Compose mounts these as read-only secrets rather than passing their values into application environment variables. If reusing an existing PostgreSQL volume, keep its initialized `POSTGRES_USER` and `POSTGRES_PASSWORD`; changing these environment values does not rotate credentials in an existing database volume. The service endpoints become available after their health checks pass. To stop the stack, run `docker compose down`; add `-v` only when intentionally deleting local database and Elasticsearch data.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -76,7 +77,7 @@ The payment API is a test double; no real charge is made. Notification delivery 
 mvn --batch-mode verify
 ```
 
-Build one image from the repository root with `docker build --build-arg SERVICE=product-service -t local/ecommerce-product-service:1.0.0 .`.
+Build one backend image from the repository root with `docker build --build-arg SERVICE=product-service --build-arg SERVICE_PORT=8081 -t local/ecommerce-product-service:1.0.0 .`. Set `SERVICE` to one of `api-gateway`, `config-server`, `discovery-server`, `inventory-service`, `notification-service`, `order-service`, `payment-service`, `product-service`, or `user-service`, and set `SERVICE_PORT` to that service's port in the Compose configuration. The frontend image is not included because no frontend source is present in this repository.
 
 ## Kubernetes / Helm
 
@@ -87,7 +88,7 @@ kubectl create secret generic ecommerce-secrets --from-literal=jwt-secret="<stro
 helm upgrade --install ecommerce-platform ./helm/ecommerce
 ```
 
-Publish the local images to a registry and override `imagePrefix` / `imageTag` before deploying to a cluster. Configure ingress TLS, network policies, managed secrets, database migrations, durable Kafka topics, and a production payment/email provider before exposing this reference implementation to real traffic. Hibernate schema auto-update and the development credentials in `.env.example` are for local learning only.
+Publish the local images to a registry and override `imagePrefix` / `imageTag` before deploying to a cluster. Configure ingress TLS, network policies, managed secrets, database migrations, durable Kafka topics, and a production payment/email provider before exposing this reference implementation to real traffic. Hibernate schema auto-update and credentials supplied through the local `.env` file are for local learning only.
 
 ## Development notes
 

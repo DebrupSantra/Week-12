@@ -1,6 +1,9 @@
 **/target
 .git
+**/.git
 .idea
 .vscode
 *.iml
 README.md
+**/.env
+**/.env.*

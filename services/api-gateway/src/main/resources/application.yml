@@ -48,7 +48,7 @@ eureka:
       defaultZone: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE:http://localhost:8761/eureka/}
 security:
   jwt:
-    secret: ${JWT_SECRET:ecommerce-local-dev-secret-key-change-this-32bytes!}
+    secret: ${JWT_SECRET}
 resilience4j:
   circuitbreaker:
     instances:
